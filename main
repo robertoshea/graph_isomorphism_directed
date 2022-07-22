@@ -1,0 +1,183 @@
+#gi_18_07_22
+
+#libraries
+if(T){
+  library(abind)
+  library(igraph)
+}
+
+#set directories to save data
+if(T){
+  graph_data_dir <- 'graph_data'
+  if(!dir.exists(graph_data_dir)){
+    dir.create(graph_data_dir)
+  }
+  g_list_file <- file.path(graph_data_dir, 'g_list.RData')
+  
+  figures_dir <- 'figures'
+  if(!dir.exists(figures_dir)){
+    dir.create(figures_dir)
+  }
+  
+  tables_dir <- 'tables'
+  if(!dir.exists(tables_dir)){
+    dir.create(tables_dir)
+  }
+}
+
+#download and save network data
+if(T){
+  
+  g_list <- list()
+  
+  #enzymes
+  if(T){
+    tmp <- tempfile()
+    for(i in 1:250){
+      url_i <- paste0('https://nrvis.com/download/data/chem/ENZYMES_g',i,'.zip')
+      download.file(url_i, destfile=tmp)
+      unzip(tmp, exdir=graph_data_dir)
+      output_file <- paste0('graph_data/ENZYMES_g',i,'.edges')
+      el_i <- read.table(output_file, sep=" ", header = F)
+      g_i <- graph_from_adj_list(as.data.frame(el_i), mode = 'out', duplicate = F)
+      g_list <- c(g_list, list(g_i))
+      
+    }
+  }
+  
+  names(g_list) <- paste0("enzyme_g", seq_along(g_list))
+  
+  save(g_list, file = g_list_file)
+  
+}
+
+#load network data
+if(T){
+  load(g_list_file)
+}
+
+#graph isomorphism functions
+if(T){
+  
+  #Gram-Schmidt orthogonalisation of vector to matrix
+  ortho_proj <- function(A, x){
+    
+    proj_A_x <- t(t(A)*colSums(A*x)/colSums(A^2))
+    x_ortho <- x - rowSums(proj_A_x)
+    return(x_ortho)
+  }
+  
+  #Get the Krylov matrix and apply Arnoldi Iteration
+  get_krylov <- function(A, z, min_tol=1e-6, max_tol=1e6){
+    n <- ncol(A)
+    K_A <- z
+    for(l in 2:n){
+      K_A_l <- c(crossprod(A, K_A[,l-1]))
+      K_A_l <- ortho_proj(K_A, K_A_l)
+      K_A_l[abs(K_A_l) < min_tol]<- 0
+      max_val <- max(abs(K_A_l))
+      if(max_val > max_tol){
+        K_A_l <- K_A_l/max_val
+      }
+      if(max_val == 0){
+        break
+      }
+      K_A <- cbind(K_A, K_A_l)
+    }
+    colnames(K_A)<- NULL
+    return(K_A)
+  }
+
+  #Find isomorphic mapping
+  get_perm_krylov <- function(A, B, verbose=T){
+    
+    n <- ncol(A)
+    zC <- zD <- matrix(0, n)
+    vA_remaining <- vB_remaining <- 1:n
+    
+    for(v_i in vA_remaining){
+      if(verbose){
+        message(v_i)
+      }
+      zC[v_i]<- v_i
+      K_A_zC <- get_krylov(A, zC)
+      K_A_zC_order <- do.call(order, as.data.frame(K_A_zC))
+      sK_A_zC <- K_A_zC[K_A_zC_order,]
+      for(v_j in vB_remaining){
+        zD_hat <- zD
+        zD_hat[v_j]<- v_i
+        K_B_zD_hat <- get_krylov(B, zD_hat)
+        K_B_zD_hat_order <- do.call(order, as.data.frame(K_B_zD_hat))
+        sK_B_zD_hat <- K_B_zD_hat[K_B_zD_hat_order,]
+        analogy_detected <- all.equal(sK_A_zC,
+                                      sK_B_zD_hat,
+                                      check.attributes=F)==T
+        if(analogy_detected){
+          break
+        }
+        
+      }
+      zD <- zD_hat
+      vA_remaining <- vA_remaining[-1]
+      vB_remaining <- setdiff(vB_remaining, v_j)
+    }
+    perm_hat <- zD
+    return(perm_hat)
+  }
+  
+  #function to get canonical orderings via BLISS algorithm
+  get_perm_bliss <- function(g_A, g_B){
+    ordering_A <- canonical_permutation(g_A)$labeling
+    ordering_B <- canonical_permutation(g_B)$labeling
+    perm_hat <- order(ordering_B)[ordering_A]
+    return(perm_hat)
+  }
+  
+}
+
+#experiments
+if(T){
+  set.seed(0)
+  experiments <- list()
+  experiments <- lapply(g_list, function(g_i){
+    
+    #extract graph adjacency matrix
+    A <- get.adjacency(g_i,sparse=F)
+    n <- ncol(A)
+    ne <- ecount(g_i)
+    perm <- sample(n)
+    B <- A[perm,perm]
+    g_A <- g_i
+    g_B <- permute.vertices(g_i, perm)
+    
+    #find isomorphic mapping krylov projection
+    start_time <- Sys.time()
+    perm_hat <- get_perm_krylov(A, B, verbose=T)
+    test_kp <- all.equal(A[perm_hat,perm_hat],B,
+                         check.attributes=F)==T
+    time_kp <- difftime(Sys.time(), start_time, units="secs")
+    
+    #bliss
+    start_time <- Sys.time()
+    perm_hat <- get_perm_bliss(g_A, g_B)
+    test_bliss <- identical_graphs(permute.vertices(g_A, perm_hat),
+                                   g_B)
+    time_bliss <- difftime(Sys.time(), start_time, units="secs")
+    
+    #return results
+    output_i <- data.frame(
+      n=n,
+      ne=ne,
+      method=c("Krylov_Projection","BLISS"),
+      test=c(test_kp, test_bliss),
+      time=c(time_kp, time_bliss)
+    )
+    return(output_i)
+    
+  })
+  experiments <- do.call(rbind.data.frame, experiments)
+  experiments$time <- round(experiments$time, 2)
+  experiments$graph <- rep(names(g_list), each=2)
+  rownames(experiments)<- NULL
+  write.csv(experiments, "tables/experiments.csv")
+}
