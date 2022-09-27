@@ -1,9 +1,30 @@
-#gi_18_07_22
+#Graph Isomorphism Directed 27_09_2022
+
+"
+Algorithm overview
+
+Vertex signatures are generated from Krylov matrices, initiated with one-hot vector indicating the vertex position.
+
+Krylov matrices are approximately orthogonalised, using a Gram-Schmidt process. The projection coefficient is rounded to the nearest
+integer to improve numerical stability. However, numerical overflow may occur, as matrix elements can grow exponentially.
+
+Signatures of orthogonal vertices are related by a linear row-permutation.
+Equality of vertex signatures under row-permutation is both necessary and sufficient to demonstrate vertex analogy.
+Likewise, vertex signatures which cannot be mapped to one another by row-permutation are non-analogous
+
+The isormorphic mapping is generated iteratively by finding analogous vertices.
+
+When an analgous pair is identified, the corresponding elements of the krylov initialisation vectors are marked, before subsequent analogies are sought.
+
+"
+
 
 #libraries
 if(T){
   library(abind)
   library(igraph)
+  library(ggplot2)
+  library(ggpubr)
 }
 
 #set directories to save data
@@ -30,24 +51,55 @@ if(T){
   
   g_list <- list()
   
-  #enzymes
-  if(T){
-    tmp <- tempfile()
-    for(i in 1:250){
-      url_i <- paste0('https://nrvis.com/download/data/chem/ENZYMES_g',i,'.zip')
-      download.file(url_i, destfile=tmp)
-      unzip(tmp, exdir=graph_data_dir)
-      output_file <- paste0('graph_data/ENZYMES_g',i,'.edges')
-      el_i <- read.table(output_file, sep=" ", header = F)
-      g_i <- graph_from_adj_list(as.data.frame(el_i), mode = 'out', duplicate = F)
-      g_list <- c(g_list, list(g_i))
-      
-    }
+  #johnson graph functions
+  sym_diff <- function(a, b){
+    union(setdiff(a,b),
+          setdiff(b,a))
+  }
+  make_johnson_graph <- function(nj,kj){
+    all_subsets <- combn(1:nj,kj)
+    n <- ncol(all_subsets)
+    am <- apply(all_subsets, 2, function(a){
+      apply(all_subsets, 2, function(b){
+        length(sym_diff(a,b))==2
+      })
+    })
+    g <- graph_from_adjacency_matrix(am!=0, mode="undirected")
+    return(g)
   }
   
-  names(g_list) <- paste0("enzyme_g", seq_along(g_list))
-  
-  save(g_list, file = g_list_file)
+  g_list <- list(
+    chvatal=make_graph('chvatal'),
+    coxeter=make_graph('coxeter'),
+    cubical=make_graph('cubical'),
+    dodecahedral=make_graph('dodecahedral'),
+    folkman=make_graph('folkman'),
+    franklin=make_graph('franklin'),
+    frucht=make_graph('frucht'),
+    grotzsch=make_graph('grotzsch'),
+    heawood=make_graph('heawood'),
+    herschel=make_graph('herschel'),
+    icosahedral=make_graph('icosahedral'),
+    levi=make_graph('levi'),
+    mcgee=make_graph('mcgee'),
+    meredith=make_graph('meredith'),
+    petersen=make_graph('petersen'),
+    noperfectmatching=make_graph('noperfectmatching'),
+    nonline=make_graph('nonline'),
+    octahedral=make_graph('octahedral'),
+    peterson=make_graph('petersen'),
+    robertson=make_graph('robertson'),
+    smallestcyclicgroup=make_graph('smallestcyclicgroup'),
+    tetrahedal=make_graph('tetrahedral'),
+    thomassen=make_graph('thomassen'),
+    tutte=make_graph('tutte'),
+    walther=make_graph('walther'),
+    johnson_5_2=make_johnson_graph(5, 2),
+    johnson_6_3=make_johnson_graph(6, 3),
+    johnson_7_3=make_johnson_graph(7, 3)
+  )
+  save(g_list,
+       file=g_list_file)
   
 }
 
@@ -59,35 +111,36 @@ if(T){
 #graph isomorphism functions
 if(T){
   
-  #Gram-Schmidt orthogonalisation of vector to matrix
-  ortho_proj <- function(A, x){
-    
-    proj_A_x <- t(t(A)*colSums(A*x)/colSums(A^2))
-    x_ortho <- x - rowSums(proj_A_x)
-    return(x_ortho)
-  }
-  
-  #Get the Krylov matrix and apply Arnoldi Iteration
-  get_krylov <- function(A, z, min_tol=1e-6, max_tol=1e6){
-    n <- ncol(A)
-    K_A <- z
-    for(l in 2:n){
-      K_A_l <- c(crossprod(A, K_A[,l-1]))
-      K_A_l <- ortho_proj(K_A, K_A_l)
-      K_A_l[abs(K_A_l) < min_tol]<- 0
-      max_val <- max(abs(K_A_l))
-      if(max_val > max_tol){
-        K_A_l <- K_A_l/max_val
-      }
-      if(max_val == 0){
+  #Gram-Schmidt orthogonalisation of vector to matrix with rounding
+  ortho_proj <- function(X, y, round_coef=T){
+    for(X_i in X){
+      nonzero <- !identical(X_i, X_i*0)
+      if(nonzero){
+        proj_coef <- sum(X_i*y)/sum(X_i^2)
+        if(round_coef){
+          proj_coef <- round(proj_coef)
+        }
+        y <- y - proj_coef*X_i
+      }else{
         break
       }
-      K_A <- cbind(K_A, K_A_l)
     }
-    colnames(K_A)<- NULL
+    return(y)
+  }
+  
+  #Get the Krylov matrix and apply gram-schmidt orthogonalisation
+  get_krylov <- function(A, z){
+    n <- ncol(A)
+    K_A <- list(z)
+    for(l in 2:n){
+      K_A_l <- crossprod(A, K_A[[l-1]])
+      K_A_l <- ortho_proj(K_A, K_A_l)
+      K_A[[l]] <- K_A_l
+    }
+    K_A <- do.call(cbind, K_A)
     return(K_A)
   }
-
+  
   #Find isomorphic mapping
   get_perm_krylov <- function(A, B, verbose=T){
     
@@ -109,9 +162,8 @@ if(T){
         K_B_zD_hat <- get_krylov(B, zD_hat)
         K_B_zD_hat_order <- do.call(order, as.data.frame(K_B_zD_hat))
         sK_B_zD_hat <- K_B_zD_hat[K_B_zD_hat_order,]
-        analogy_detected <- all.equal(sK_A_zC,
-                                      sK_B_zD_hat,
-                                      check.attributes=F)==T
+        analogy_detected <- identical(sK_A_zC,
+                                      sK_B_zD_hat)
         if(analogy_detected){
           break
         }
@@ -137,24 +189,50 @@ if(T){
 
 #experiments
 if(T){
+  
   set.seed(0)
+  experiment_params <- expand.grid(
+    rep=1:10,
+    directed=c(T,F),
+    g_name=names(g_list)
+  )
   experiments <- list()
-  experiments <- lapply(g_list, function(g_i){
+  experiments <- lapply(1:nrow(experiment_params), function(params_i){
+    
+    rep_i <- experiment_params$rep[params_i]
+    directed_i <- experiment_params$directed[params_i]
+    g_name_i <- experiment_params$g_name[params_i]
+    g_i <- g_list[[g_name_i]]
+    
+    message(g_name_i," ", directed_i," ", rep_i)
     
     #extract graph adjacency matrix
     A <- get.adjacency(g_i,sparse=F)
+    if(directed_i){
+      A[lower.tri(A)]<- -A[lower.tri(A)]
+      g_i <- graph_from_adjacency_matrix(A)
+    }
+    
+    #measure graph characteristics
     n <- ncol(A)
     ne <- ecount(g_i)
+    d_max <- max(degree(g_i, mode="out"))
+    d_avg <- max(degree(g_i, mode="out"))
+    cluster_coef <- transitivity(g_i)
+    n_evals <- length(unique(eigen(A,
+                                   symmetric = !directed_i,
+                                   only.values=T)$values))
+    
+    #generate permuted graph
     perm <- sample(n)
     B <- A[perm,perm]
     g_A <- g_i
     g_B <- permute.vertices(g_i, perm)
     
-    #find isomorphic mapping krylov projection
+    #find isomorphic mapping by vertex analogy testing
     start_time <- Sys.time()
-    perm_hat <- get_perm_krylov(A, B, verbose=T)
-    test_kp <- all.equal(A[perm_hat,perm_hat],B,
-                         check.attributes=F)==T
+    perm_hat <- get_perm_krylov(A, B, verbose=F)
+    test_kp <- identical(A[perm_hat,perm_hat],B)
     time_kp <- difftime(Sys.time(), start_time, units="secs")
     
     #bliss
@@ -166,9 +244,15 @@ if(T){
     
     #return results
     output_i <- data.frame(
+      graph=g_name_i,
+      directed=directed_i,
       n=n,
       ne=ne,
-      method=c("Krylov_Projection","BLISS"),
+      d_max=d_max,
+      d_avg=d_avg,
+      cluster_coef=cluster_coef,
+      n_evals=n_evals,
+      method=c("Vertex_Analogy_Testing","BLISS"),
       test=c(test_kp, test_bliss),
       time=c(time_kp, time_bliss)
     )
@@ -177,7 +261,41 @@ if(T){
   })
   experiments <- do.call(rbind.data.frame, experiments)
   experiments$time <- round(experiments$time, 2)
-  experiments$graph <- rep(names(g_list), each=2)
   rownames(experiments)<- NULL
-  write.csv(experiments, "tables/experiments.csv")
+  write.csv(experiments, "tables/experiments_27_09_22.csv")
+  
 }
+
+#plotting
+if(T){
+  df_i <- data.frame(
+    N=experiments$n[experiments$method=="Vertex_Analogy_Testing"],
+    Time=as.numeric(experiments$time[experiments$method=="Vertex_Analogy_Testing"])
+  )
+  df_i$Time_5 <- df_i$Time^(1/4)
+  
+  p1 <- ggplot(df_i, aes(x=N, y=Time))+
+    geom_point(color="forestgreen")+
+    xlab(element_blank())+
+    ylab("Time (sec)")
+  p2 <-  ggplot(df_i, aes(x=N, y=Time_5))+
+    geom_point(color="darkviolet")+
+    xlab("Number of Vertices")+
+    ylab(bquote('Time '(sec^{1/4})))
+  time_plot <- ggarrange(plotlist=list(p1, p2))
+  ggsave(time_plot,
+         filename = "figures/time_plot.png",
+         units="in",
+         dpi=600,
+         height=5,
+         width=8
+  )
+}
+
+#save data
+if(T){
+  save.image('gi_27_09_22.RData')
+}
+
+
+
